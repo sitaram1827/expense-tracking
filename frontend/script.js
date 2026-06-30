@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const API = "http://localhost:5000/api";
+const API = "https://expense-tracking-9ahv.onrender.com";
 const fmt = n => `Rs ${Number(n).toFixed(2)}`;
 const getUser = () => localStorage.getItem("user");
 const setUser = e => localStorage.setItem("user", e);

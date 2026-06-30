@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const API = "https://expense-tracking-9ahv.onrender.com";
+const API = "https://expense-tracking-9ahv.onrender.com/api";
 const fmt = n => `Rs ${Number(n).toFixed(2)}`;
 const getUser = () => localStorage.getItem("user");
 const setUser = e => localStorage.setItem("user", e);
@@ -294,3 +294,4 @@ if ($("exportCsv")) {
   });
 }
 if (getUser()) loadDash();
+

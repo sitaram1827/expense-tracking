@@ -46,11 +46,13 @@ expense-tracker/
    - OR serve it with a simple static server, e.g. from the `frontend` folder:
      ```
      cd ../frontend
-     python3 -m http.server 5500
+     npm serve
      ```
      then visit `http://localhost:5500` in your browser.
 
    The frontend talks to the backend at `http://localhost:5000/api`, so make sure the backend (step 3) is running first.
+
+live website online : https://expense-tracking-1-n17w.onrender.com/
 
 ## Notes
 

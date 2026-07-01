@@ -61,7 +61,7 @@ app.post("/api/auth/register", (req, res) => {
   if (db.users.some((u) => u.email === email)) {
     return res.status(400).json({ error: "User already exists" });
   }
-  const isAdminFlag = !!is_admin || (typeof email === "string" && email.trim().endsWith(".admin"));
+  const isAdminFlag = is_admin === true || is_admin === "true" || is_admin === "admin";
   db.users.push({
     name,
     email,

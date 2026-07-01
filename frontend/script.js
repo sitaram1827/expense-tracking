@@ -1,218 +1,297 @@
-const $ = id => document.getElementById(id);
+const $ = (id) => document.getElementById(id);
 const API = "https://expense-tracking-9ahv.onrender.com/api";
-const fmt = n => `Rs ${Number(n).toFixed(2)}`;
+const fmt = (n) => `Rs ${Number(n).toFixed(2)}`;
 const getUser = () => localStorage.getItem("user");
-const setUser = e => localStorage.setItem("user", e);
+const setUser = (email) => localStorage.setItem("user", email);
 const clearUser = () => localStorage.removeItem("user");
 
-// ── server wake-up banner ───────────────────────────────────────────────────
-// Render free tier sleeps after 15 min idle; first request takes ~30 s.
-// We ping /api/auth/login with a dummy body, ignore the 401, and show a
-// "Connecting…" banner so users know the site isn't broken.
+// Render free tier can sleep after idle time, so keep a single warm-up ping
+// instead of retrying in a loop.
 (async function warmUp() {
+  if (!document.body) return;
   const banner = document.createElement("div");
   banner.id = "wakeupBanner";
-  banner.textContent = "⏳ Connecting to server… (first load may take ~30s)";
+  banner.textContent = "Connecting to server...";
   Object.assign(banner.style, {
-    position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999,
-    background: "#f59e0b", color: "#fff", textAlign: "center",
-    padding: "10px", fontWeight: "bold", fontSize: "14px"
+    position: "fixed",
+    top: "0",
+    left: "0",
+    right: "0",
+    zIndex: "9999",
+    background: "#f59e0b",
+    color: "#fff",
+    textAlign: "center",
+    padding: "10px",
+    fontWeight: "700",
+    fontSize: "14px",
   });
   document.body.prepend(banner);
 
-  const start = Date.now();
-  let ok = false;
-  while (!ok && Date.now() - start < 60000) {
-    try {
-      await fetch(`${API}/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: "__ping__", password: "__ping__" })
-      });
-      ok = true;
-    } catch (_) {
-      await new Promise(r => setTimeout(r, 3000));
-    }
-  }
-  if (ok) {
-    banner.textContent = "✅ Server connected!";
-    banner.style.background = "#11a36a";
-    setTimeout(() => banner.remove(), 2000);
-  } else {
-    banner.textContent = "❌ Could not reach server. Please refresh.";
+  try {
+    await fetch(`${API}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "__ping__", password: "__ping__" }),
+    });
+    banner.textContent = "Server connected";
+    banner.style.background = "#10b981";
+    setTimeout(() => banner.remove(), 1500);
+  } catch (_) {
+    banner.textContent = "Server connection failed";
     banner.style.background = "#ef4444";
   }
 })();
 
-// ── fetch wrapper ───────────────────────────────────────────────────────────
 async function api(path, opts = {}) {
   const res = await fetch(`${API}${path}`, {
     ...opts,
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) }
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Error");
   return data;
 }
 
-// ── state ───────────────────────────────────────────────────────────────────
-let user = null, page = "dashboard", isAdmin = false, txs = [];
+let user = null;
+let isAdmin = false;
+let txs = [];
+let page = "add-tx";
+
 const pages = Array.from(document.querySelectorAll(".page"));
 const navBtns = Array.from(document.querySelectorAll(".nav-btn"));
+const overviewStrip = $("overviewStrip");
+const loginForm = $("loginForm");
+const regForm = $("registerForm");
+const logoutBtn = $("logoutBtn");
+const loginBtn = $("loginBtn");
+const loginTab = $("loginTab");
+const regTab = $("registerTab");
+const loginPane = $("loginPane");
+const regPane = $("registerPane");
+const txForm = $("transactionForm");
+const cancelBtn = $("cancelBtn");
+const adminBtn = $("adminBtn");
 
-function setPage(p) {
-  page = p;
-  pages.forEach(el => {
-    el.classList.toggle("active", el.id === `page-${p}`);
-    el.classList.toggle("hidden", el.id !== `page-${p}`);
-  });
-  navBtns.forEach(btn => btn.classList.toggle("active", btn.dataset.page === p));
-  if (p === "admin" && !isAdmin) { setPage("dashboard"); return; }
-  // FIX: refresh admin data every time the admin tab is opened
-  if (p === "admin" && isAdmin) renderAdmin();
-}
-
-// ── budget helpers ──────────────────────────────────────────────────────────
-const getBudgetKey = e => `budget:${e}`;
-const getBudget = e => { const v = Number(localStorage.getItem(getBudgetKey(e))); return Number.isFinite(v) && v > 0 ? v : 0; };
-const setBudget = (e, a) => localStorage.setItem(getBudgetKey(e), String(a));
+const getBudgetKey = (email) => `budget:${email}`;
+const getBudget = (email) => {
+  const value = Number(localStorage.getItem(getBudgetKey(email)));
+  return Number.isFinite(value) && value > 0 ? value : 0;
+};
+const setBudget = (email, amount) => localStorage.setItem(getBudgetKey(email), String(amount));
 
 function getTotals() {
-  let inc = 0, exp = 0;
-  txs.forEach(tx => { if (tx.type === "income") inc += tx.amount; else exp += tx.amount; });
+  let inc = 0;
+  let exp = 0;
+  txs.forEach((tx) => {
+    if (tx.type === "income") inc += Number(tx.amount) || 0;
+    else exp += Number(tx.amount) || 0;
+  });
   return { inc, exp, bal: inc - exp };
 }
 
-// ── nav ─────────────────────────────────────────────────────────────────────
-navBtns.forEach(btn => btn.addEventListener("click", () => setPage(btn.dataset.page)));
+function setPage(nextPage) {
+  let target = nextPage === "dashboard" ? "add-tx" : nextPage;
+  if (target === "admin" && !isAdmin) target = "add-tx";
+  page = target;
 
-// ── auth ─────────────────────────────────────────────────────────────────────
-const loginForm = $("loginForm"), regForm = $("registerForm"), logoutBtn = $("logoutBtn");
-const loginBtn = $("loginBtn"), loginTab = $("loginTab"), regTab = $("registerTab");
-const loginPane = $("loginPane"), regPane = $("registerPane");
+  pages.forEach((el) => {
+    const isActive = el.id === `page-${target}`;
+    el.classList.toggle("active", isActive);
+    el.classList.toggle("hidden", !isActive);
+  });
 
-function setAuthTab(t) {
-  const isLog = t === "login";
-  loginPane.classList.toggle("active", isLog);
-  regPane.classList.toggle("active", !isLog);
-  loginTab.classList.toggle("active", isLog);
-  regTab.classList.toggle("active", !isLog);
+  navBtns.forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.page === target);
+  });
+
+  if (target === "admin" && isAdmin) renderAdmin();
+}
+
+function syncRoleViews() {
+  if (overviewStrip) overviewStrip.classList.toggle("hidden", !isAdmin);
+
+  navBtns.forEach((btn) => {
+    const role = btn.dataset.role || "all";
+    const visible = role === "all" || (role === "admin" && isAdmin);
+    btn.classList.toggle("hidden", !visible);
+  });
+
+  if (!isAdmin && page === "admin") {
+    setPage("add-tx");
+  }
+}
+
+navBtns.forEach((btn) => btn.addEventListener("click", () => setPage(btn.dataset.page)));
+
+function setAuthTab(tabName) {
+  const isLogin = tabName === "login";
+  loginPane.classList.toggle("active", isLogin);
+  regPane.classList.toggle("active", !isLogin);
+  loginTab.classList.toggle("active", isLogin);
+  regTab.classList.toggle("active", !isLogin);
   $("authMessage").textContent = "";
 }
+
 if (loginTab) loginTab.addEventListener("click", () => setAuthTab("login"));
 if (regTab) regTab.addEventListener("click", () => setAuthTab("register"));
 
-async function doLogin() {
-  const btn = $("loginBtn");
-  btn.disabled = true; btn.textContent = "Logging in…";
-  try {
-    const em = $("loginEmail").value.trim(), p = $("loginPassword").value;
-    const res = await api("/auth/login", { method: "POST", body: JSON.stringify({ email: em, password: p }) });
-    setUser(res.user.email);
-    await loadDash();
-    setPage("dashboard");
-  } catch (e) {
-    $("authMessage").textContent = e.message;
-  } finally {
-    btn.disabled = false; btn.textContent = "Login";
-  }
-}
-if (regForm) {
-  regForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const sbtn = regForm.querySelector("button[type=submit]");
-    sbtn.disabled = true; sbtn.textContent = "Registering…";
-    try {
-      const n = $("registerName").value.trim(), em = $("registerEmail").value.trim(), p = $("registerPassword").value;
-      await api("/auth/register", { method: "POST", body: JSON.stringify({ name: n, email: em, password: p, is_admin: false }) });
-      $("authMessage").textContent = "Registered! Login now.";
-      regForm.reset();
-      setAuthTab("login");
-    } catch (e) {
-      $("authMessage").textContent = e.message;
-    } finally {
-      sbtn.disabled = false; sbtn.textContent = "Register";
-    }
-  });
-}
-if (loginForm) loginForm.addEventListener("submit", async (e) => { e.preventDefault(); await doLogin(); });
-if (loginBtn) loginBtn.addEventListener("click", doLogin);
-
-if (logoutBtn) {
-  logoutBtn.addEventListener("click", () => {
-    clearUser(); user = null; isAdmin = false; txs = [];
-    $("authContainer").classList.remove("hidden");
-    $("dashboardContainer").classList.add("hidden");
-    loginForm.reset();
-    setAuthTab("login");
-  });
-}
-
-// ── load dashboard data ─────────────────────────────────────────────────────
 async function loadDash() {
-  const em = getUser();
-  if (!em) return;
+  const email = getUser();
+  if (!email) return;
+
   try {
-    const res = await api(`/me?email=${encodeURIComponent(em)}`);
+    const res = await api(`/me?email=${encodeURIComponent(email)}`);
     user = res;
-    isAdmin = res.is_admin;
+    isAdmin = !!res.is_admin;
     txs = res.transactions || [];
+
     $("userChip").textContent = res.user.email;
     $("authContainer").classList.add("hidden");
     $("dashboardContainer").classList.remove("hidden");
-    $("adminBtn").classList.toggle("hidden", !isAdmin);
-    render();
-  } catch (e) {
+
+    syncRoleViews();
+    renderAll();
+  } catch (error) {
     clearUser();
+    user = null;
+    isAdmin = false;
+    txs = [];
     $("dashboardContainer").classList.add("hidden");
     $("authContainer").classList.remove("hidden");
   }
 }
 
-// ── render ──────────────────────────────────────────────────────────────────
-async function render() {
+async function doLogin() {
+  const btn = $("loginBtn");
+  btn.disabled = true;
+  btn.textContent = "Logging in...";
+
+  try {
+    const email = $("loginEmail").value.trim();
+    const password = $("loginPassword").value;
+    const res = await api("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+    setUser(res.user.email);
+    await loadDash();
+    setPage("add-tx");
+  } catch (error) {
+    $("authMessage").textContent = error.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Login";
+  }
+}
+
+if (loginForm) loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await doLogin();
+});
+if (loginBtn) loginBtn.addEventListener("click", doLogin);
+
+if (regForm) {
+  regForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submitBtn = regForm.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Registering...";
+
+    try {
+      const name = $("registerName").value.trim();
+      const email = $("registerEmail").value.trim();
+      const password = $("registerPassword").value;
+      const role = $("registerRole").value;
+
+      await api("/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ name, email, password, is_admin: role === "admin" }),
+      });
+
+      $("authMessage").textContent = "Registered. Please log in.";
+      regForm.reset();
+      $("registerRole").value = "user";
+      setAuthTab("login");
+    } catch (error) {
+      $("authMessage").textContent = error.message;
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Register";
+    }
+  });
+}
+
+if (logoutBtn) {
+  logoutBtn.addEventListener("click", () => {
+    clearUser();
+    user = null;
+    isAdmin = false;
+    txs = [];
+    $("authContainer").classList.remove("hidden");
+    $("dashboardContainer").classList.add("hidden");
+    loginForm.reset();
+    if (regForm) regForm.reset();
+    setAuthTab("login");
+    setPage("add-tx");
+    syncRoleViews();
+  });
+}
+
+function renderAll() {
   renderDash();
   renderHistory();
   renderVisual();
   renderBudget();
-  // FIX: await renderAdmin so it actually completes before returning
-  if (isAdmin) await renderAdmin();
+  if (isAdmin && page === "admin") renderAdmin();
 }
 
 function renderDash() {
   const { inc, exp, bal } = getTotals();
-  const cats = [...new Set(txs.map(t => t.category))];
-  let topCat = "-";
-  if (cats.length > 0) {
-    topCat = cats.reduce((max, c) => {
-      const sum = txs.filter(t => t.category === c && t.type === "expense").reduce((s, t) => s + t.amount, 0);
-      return sum > txs.filter(t => t.category === max && t.type === "expense").reduce((s, t) => s + t.amount, 0) ? c : max;
-    });
+  const categories = [...new Set(txs.map((tx) => tx.category).filter(Boolean))];
+  let topCategory = "-";
+
+  if (categories.length > 0) {
+    topCategory = categories.reduce((best, current) => {
+      const currentExpense = txs.filter((tx) => tx.category === current && tx.type === "expense").reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0);
+      const bestExpense = txs.filter((tx) => tx.category === best && tx.type === "expense").reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0);
+      return currentExpense > bestExpense ? current : best;
+    }, categories[0]);
   }
+
   $("totalIncome").textContent = fmt(inc);
   $("totalExpense").textContent = fmt(exp);
   $("balance").textContent = fmt(bal);
-  $("topExpenseCategory").textContent = topCat;
+  $("topExpenseCategory").textContent = topCategory;
 }
 
 function renderHistory() {
   const tbody = $("historyTable");
   if (!tbody) return;
+
   tbody.innerHTML = "";
   let runningBalance = 0;
-  txs.forEach(tx => {
-    runningBalance += tx.type === "income" ? tx.amount : -tx.amount;
-    const tr = $("txRow").content.cloneNode(true);
-    tr.querySelector(".tx-date").textContent = tx.date;
-    tr.querySelector(".tx-desc").textContent = tx.desc;
-    tr.querySelector(".tx-cat").textContent = tx.category;
-    tr.querySelector(".tx-type").textContent = tx.type;
-    tr.querySelector(".tx-amt").textContent = fmt(tx.amount);
-    tr.querySelector(".tx-bal").textContent = fmt(runningBalance);
-    tr.querySelector(".edit-btn").onclick = () => editTx(tx.id);
-    tr.querySelector(".del-btn").onclick = () => delTx(tx.id);
-    tbody.appendChild(tr);
+
+  txs.forEach((tx) => {
+    runningBalance += tx.type === "income" ? (Number(tx.amount) || 0) : -(Number(tx.amount) || 0);
+    const fragment = $("txRow").content.cloneNode(true);
+    const cells = fragment.querySelectorAll("td");
+    const values = [tx.date, tx.desc, tx.category, tx.type, fmt(tx.amount), fmt(runningBalance)];
+    const labels = ["Date", "Description", "Category", "Type", "Amount", "Balance"];
+
+    cells.forEach((cell, index) => {
+      if (index < values.length) {
+        cell.textContent = values[index];
+        cell.dataset.label = labels[index];
+      }
+    });
+
+    const actionCell = fragment.querySelector(".edit-btn").parentElement;
+    actionCell.dataset.label = "Action";
+    fragment.querySelector(".edit-btn").addEventListener("click", () => editTx(tx.id));
+    fragment.querySelector(".del-btn").addEventListener("click", () => delTx(tx.id));
+    tbody.appendChild(fragment);
   });
+
   $("emptyMsg").classList.toggle("hidden", txs.length > 0);
 }
 
@@ -220,43 +299,63 @@ function renderVisual() {
   const { inc, exp } = getTotals();
   $("visualIncome").textContent = fmt(inc);
   $("visualExpense").textContent = fmt(exp);
+
   const canvas = $("donutChart");
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
+
   const total = inc + exp;
   ctx.clearRect(0, 0, 300, 300);
   if (total === 0) return;
-  const cx = 150, cy = 150, r = 80;
+
+  const cx = 150;
+  const cy = 150;
+  const r = 84;
   let angle = -Math.PI / 2;
-  const incA = (inc / total) * 2 * Math.PI;
-  ctx.fillStyle = "#11a36a";
-  ctx.beginPath(); ctx.arc(cx, cy, r, angle, angle + incA); ctx.lineTo(cx, cy); ctx.fill();
-  angle += incA;
-  ctx.fillStyle = "#ff5470";
-  ctx.beginPath(); ctx.arc(cx, cy, r, angle, angle + (2 * Math.PI - incA)); ctx.lineTo(cx, cy); ctx.fill();
+  const incAngle = (inc / total) * 2 * Math.PI;
+
+  ctx.fillStyle = "#14b8a6";
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, angle, angle + incAngle);
+  ctx.lineTo(cx, cy);
+  ctx.fill();
+
+  angle += incAngle;
+  ctx.fillStyle = "#f97316";
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, angle, angle + (2 * Math.PI - incAngle));
+  ctx.lineTo(cx, cy);
+  ctx.fill();
 }
 
 function renderBudget() {
-  const em = getUser();
-  if (!em) return;
-  const bud = getBudget(em);
-  const spent = txs.filter(t => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-  const rem = bud - spent;
-  $("budgetAmount").textContent = fmt(bud);
+  const email = getUser();
+  if (!email) return;
+
+  const budget = getBudget(email);
+  const spent = txs.filter((tx) => tx.type === "expense").reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0);
+  const remaining = budget - spent;
+
+  $("budgetAmount").textContent = fmt(budget);
   $("budgetSpent").textContent = fmt(spent);
-  $("budgetRemaining").textContent = fmt(Math.max(rem, 0));
-  if (bud > 0) $("progressFill").style.width = Math.min((spent / bud) * 100, 100) + "%";
+  $("budgetRemaining").textContent = fmt(Math.max(remaining, 0));
+
+  if (budget > 0) {
+    $("progressFill").style.width = `${Math.min((spent / budget) * 100, 100)}%`;
+  } else {
+    $("progressFill").style.width = "0%";
+  }
 }
 
-// ── admin ────────────────────────────────────────────────────────────────────
 async function renderAdmin() {
-  $("adminBtn").classList.remove("hidden");
+  if (!isAdmin) return;
+
   const tbody = $("adminUsersTable");
-  // FIX: show a loading row so the user knows a request is in-flight
   if (tbody) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#888">Loading…</td></tr>`;
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#64748b">Loading...</td></tr>';
   }
+
   try {
     const res = await api(`/admin/overview?email=${encodeURIComponent(getUser())}`);
     $("adminUsers").textContent = res.summary.total_users || 0;
@@ -264,102 +363,120 @@ async function renderAdmin() {
     $("adminIncome").textContent = fmt(res.summary.total_income || 0);
     $("adminExpense").textContent = fmt(res.summary.total_expense || 0);
 
-    if (tbody) {
-      tbody.innerHTML = "";
-      const usersList = res.users || [];
-      if (usersList.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#888">No users found.</td></tr>`;
-        return;
-      }
-      usersList.forEach(u => {
-        const isSelf = (u.email === getUser());
-        const isAdminUser = !!u.is_admin;
-        // FIX: only disable buttons for self or existing admins (not regular users)
-        const canAct = !isSelf && !isAdminUser;
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>${u.name || "-"}</td>
-          <td>${u.email || "-"}</td>
-          <td>${u.transaction_count || 0}</td>
-          <td>${fmt(u.total_income || 0)}</td>
-          <td>${fmt(u.total_expense || 0)}</td>
-          <td>${fmt(u.balance || 0)}</td>
-          <td>
-            <button class="edit-btn make-admin-btn" ${canAct ? "" : "disabled"}>Make Admin</button>
-            <button class="del-btn delete-user-btn" ${canAct ? "" : "disabled"}>Delete</button>
-          </td>`;
+    if (!tbody) return;
+    tbody.innerHTML = "";
 
-        // FIX: attach listeners directly, only when button is not disabled
-        if (canAct) {
-          tr.querySelector(".make-admin-btn").addEventListener("click", async () => {
-            if (!confirm(`Promote ${u.email} to admin?`)) return;
-            try {
-              await api(`/admin/users/${encodeURIComponent(u.email)}/promote?email=${encodeURIComponent(getUser())}`, { method: "POST" });
-              await renderAdmin();
-            } catch (e) { alert("Promote failed: " + e.message); }
-          });
-
-          // FIX: was only running when `!deleteDisabled` (empty string = falsy) — now always runs for canAct users
-          tr.querySelector(".delete-user-btn").addEventListener("click", async () => {
-            if (!confirm(`Delete user ${u.email} and all their data?`)) return;
-            try {
-              await api(`/admin/users/${encodeURIComponent(u.email)}?email=${encodeURIComponent(getUser())}`, { method: "DELETE" });
-              await renderAdmin();
-            } catch (e) { alert("Delete failed: " + e.message); }
-          });
-        }
-        tbody.appendChild(tr);
-      });
+    const users = res.users || [];
+    if (users.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#64748b">No users found.</td></tr>';
+      return;
     }
-  } catch (e) {
-    // FIX: show error in table instead of silent console.error
-    if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#ef4444">Failed to load: ${e.message}. <a href="#" onclick="renderAdmin();return false;">Retry</a></td></tr>`;
-    console.error("Admin load error", e);
+
+    users.forEach((u) => {
+      const isSelf = u.email === getUser();
+      const canAct = !isSelf && !u.is_admin;
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td data-label="Name">${u.name || "-"}</td>
+        <td data-label="Email">${u.email || "-"}</td>
+        <td data-label="Tx">${u.transaction_count || 0}</td>
+        <td data-label="Income">${fmt(u.total_income || 0)}</td>
+        <td data-label="Expense">${fmt(u.total_expense || 0)}</td>
+        <td data-label="Balance">${fmt(u.balance || 0)}</td>
+        <td data-label="Action">
+          <button class="edit-btn make-admin-btn" type="button" ${canAct ? "" : "disabled"}>Make Admin</button>
+          <button class="del-btn delete-user-btn" type="button" ${canAct ? "" : "disabled"}>Delete</button>
+        </td>
+      `;
+
+      if (canAct) {
+        tr.querySelector(".make-admin-btn").addEventListener("click", async () => {
+          if (!confirm(`Promote ${u.email} to admin?`)) return;
+          try {
+            await api(`/admin/users/${encodeURIComponent(u.email)}/promote?email=${encodeURIComponent(getUser())}`, { method: "POST" });
+            await renderAdmin();
+          } catch (error) {
+            alert(`Promote failed: ${error.message}`);
+          }
+        });
+
+        tr.querySelector(".delete-user-btn").addEventListener("click", async () => {
+          if (!confirm(`Delete user ${u.email} and all their data?`)) return;
+          try {
+            await api(`/admin/users/${encodeURIComponent(u.email)}?email=${encodeURIComponent(getUser())}`, { method: "DELETE" });
+            await renderAdmin();
+          } catch (error) {
+            alert(`Delete failed: ${error.message}`);
+          }
+        });
+      }
+
+      tbody.appendChild(tr);
+    });
+  } catch (error) {
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#ef4444">Failed to load: ${error.message}. <a href="#" onclick="renderAdmin();return false;">Retry</a></td></tr>`;
+    }
   }
 }
 
-// ── transactions ─────────────────────────────────────────────────────────────
-const txForm = $("transactionForm");
 if (txForm) {
-  txForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const em = getUser();
-    if (!em) return;
-    const sbtn = $("submitBtn");
-    sbtn.disabled = true;
+  txForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const email = getUser();
+    if (!email) return;
+
+    const submitBtn = $("submitBtn");
+    submitBtn.disabled = true;
+
     try {
-      const d = $("description").value, a = parseFloat($("amount").value);
-      const c = $("category").value, t = $("type").value, dt = $("date").value;
-      const id = txForm.dataset.txId;
-      if (id) {
-        await api(`/transactions/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ email: em, desc: d, amount: a, category: c, type: t, date: dt }) });
+      const desc = $("description").value.trim();
+      const amount = parseFloat($("amount").value);
+      const category = $("category").value.trim();
+      const type = $("type").value;
+      const date = $("date").value;
+      const txId = txForm.dataset.txId;
+
+      if (txId) {
+        await api(`/transactions/${encodeURIComponent(txId)}`, {
+          method: "PUT",
+          body: JSON.stringify({ email, desc, amount, category, type, date }),
+        });
       } else {
-        await api("/transactions", { method: "POST", body: JSON.stringify({ email: em, desc: d, amount: a, category: c, type: t, date: dt }) });
+        await api("/transactions", {
+          method: "POST",
+          body: JSON.stringify({ email, desc, amount, category, type, date }),
+        });
       }
+
       txForm.reset();
       delete txForm.dataset.txId;
-      sbtn.textContent = "Add";
+      $("submitBtn").textContent = "Add";
+      if (cancelBtn) cancelBtn.classList.add("hidden");
       await loadDash();
-      setPage("dashboard");
-    } catch (e) { alert(e.message); }
-    finally { sbtn.disabled = false; }
+      setPage("history");
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      submitBtn.disabled = false;
+    }
   });
 }
 
-const cancelBtn = $("cancelBtn");
 if (cancelBtn) {
   cancelBtn.addEventListener("click", () => {
     txForm.reset();
     delete txForm.dataset.txId;
     $("submitBtn").textContent = "Add";
     cancelBtn.classList.add("hidden");
-    setPage("dashboard");
+    setPage("history");
   });
 }
 
 function editTx(id) {
-  const tx = txs.find(t => t.id === id);
+  const tx = txs.find((item) => item.id === id);
   if (!tx) return;
+
   $("description").value = tx.desc;
   $("amount").value = tx.amount;
   $("category").value = tx.category;
@@ -373,37 +490,50 @@ function editTx(id) {
 
 async function delTx(id) {
   if (!confirm("Delete this transaction?")) return;
-  const em = getUser();
-  if (!em) return;
+  const email = getUser();
+  if (!email) return;
+
   try {
-    await api(`/transactions/${encodeURIComponent(id)}`, { method: "DELETE", headers: { "Email": em } });
+    await api(`/transactions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { Email: email },
+    });
     await loadDash();
-  } catch (e) { alert(e.message); }
+  } catch (error) {
+    alert(error.message);
+  }
 }
 
-// ── budget ───────────────────────────────────────────────────────────────────
 if ($("saveBudgetBtn")) {
   $("saveBudgetBtn").addEventListener("click", () => {
-    const em = getUser();
-    if (!em) return;
-    const a = Number($("budgetInput").value);
-    if (!Number.isFinite(a) || a < 0) return;
-    setBudget(em, a);
-    $("budgetMsg").textContent = "Budget saved!";
+    const email = getUser();
+    if (!email) return;
+    const amount = Number($("budgetInput").value);
+    if (!Number.isFinite(amount) || amount < 0) return;
+    setBudget(email, amount);
+    $("budgetMsg").textContent = "Budget saved.";
     renderBudget();
   });
 }
 
-// ── CSV export ────────────────────────────────────────────────────────────────
 if ($("exportCsv")) {
   $("exportCsv").addEventListener("click", () => {
-    if (txs.length === 0) { alert("No data"); return; }
-    const csv = [["Date", "Desc", "Category", "Type", "Amount"], ...txs.map(t => [t.date, t.desc, t.category, t.type, t.amount])].map(r => r.join(",")).join("\n");
+    if (txs.length === 0) {
+      alert("No data");
+      return;
+    }
+
+    const csv = [["Date", "Desc", "Category", "Type", "Amount"], ...txs.map((tx) => [tx.date, tx.desc, tx.category, tx.type, tx.amount])]
+      .map((row) => row.join(","))
+      .join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    const a = document.createElement("a"); a.href = url; a.download = "transactions.csv"; a.click();
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "transactions.csv";
+    link.click();
     URL.revokeObjectURL(url);
   });
 }
 
-// ── init ──────────────────────────────────────────────────────────────────────
+setPage(page);
 if (getUser()) loadDash();
